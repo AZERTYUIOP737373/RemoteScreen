@@ -1,0 +1,1041 @@
+
+import asyncio
+import io
+import json
+import threading
+import time
+import tkinter as tk
+from tkinter import ttk
+
+import mss
+from PIL import Image
+import websockets
+import pyautogui
+
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+SERVER_URL = "wws://screenshot-silk-mind-rrp.trycloudflare.com/agent"
+
+
+FPS = 15
+JPEG_QUALITY = 65
+
+MONITOR_NUMBER = 1
+
+MAX_SIZE = 8 * 1024 * 1024
+
+RECONNECT_DELAY = 3
+
+CONTROL_TOKEN = "CHANGE-ME-REMOTE-SCREEN-2026"
+
+
+# ============================================================
+# ÉTAT
+# ============================================================
+
+running = True
+
+websocket = None
+
+network_loop_instance = None
+
+
+# ============================================================
+# PYAUTOGUI
+# ============================================================
+
+pyautogui.PAUSE = 0
+
+# Permet au curseur distant d'aller dans les coins sans
+# déclencher le FAILSAFE de PyAutoGUI.
+pyautogui.FAILSAFE = False
+
+
+# ============================================================
+# FENÊTRE AGENT
+# ============================================================
+
+class AgentWindow:
+
+    def __init__(self):
+
+        self.root = tk.Tk()
+
+        self.root.title(
+            "Remote Screen — Agent"
+        )
+
+        self.root.geometry(
+            "460x220"
+        )
+
+        self.root.resizable(
+            False,
+            False
+        )
+
+        self.root.configure(
+            bg="#0b0f14"
+        )
+
+        self.root.protocol(
+            "WM_DELETE_WINDOW",
+            self.stop
+        )
+
+        # ----------------------------------------------------
+        # STYLE
+        # ----------------------------------------------------
+
+        style = ttk.Style()
+
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        style.configure(
+            "Agent.TFrame",
+            background="#0b0f14"
+        )
+
+        style.configure(
+            "Title.TLabel",
+            background="#0b0f14",
+            foreground="#ffffff",
+            font=("Segoe UI", 19, "bold")
+        )
+
+        style.configure(
+            "Sub.TLabel",
+            background="#0b0f14",
+            foreground="#8d99a6",
+            font=("Segoe UI", 10)
+        )
+
+        style.configure(
+            "Status.TLabel",
+            background="#0b0f14",
+            foreground="#f0ad4e",
+            font=("Segoe UI", 10, "bold")
+        )
+
+        style.configure(
+            "Agent.TButton",
+            font=("Segoe UI", 10, "bold"),
+            padding=(15, 8)
+        )
+
+        # ----------------------------------------------------
+        # CONTENU
+        # ----------------------------------------------------
+
+        frame = ttk.Frame(
+            self.root,
+            style="Agent.TFrame",
+            padding=25
+        )
+
+        frame.pack(
+            fill="both",
+            expand=True
+        )
+
+        title = ttk.Label(
+            frame,
+            text="REMOTE SCREEN",
+            style="Title.TLabel"
+        )
+
+        title.pack(
+            pady=(0, 4)
+        )
+
+        subtitle = ttk.Label(
+            frame,
+            text="Partage d'écran + souris + clavier",
+            style="Sub.TLabel"
+        )
+
+        subtitle.pack(
+            pady=(0, 15)
+        )
+
+        self.status = ttk.Label(
+            frame,
+            text="Initialisation...",
+            style="Status.TLabel"
+        )
+
+        self.status.pack(
+            pady=8
+        )
+
+        self.button = ttk.Button(
+            frame,
+            text="Arrêter le partage",
+            style="Agent.TButton",
+            command=self.stop
+        )
+
+        self.button.pack(
+            pady=8
+        )
+
+
+    # ========================================================
+    # STATUT
+    # ========================================================
+
+    def set_status(self, text):
+
+        try:
+
+            if self.root.winfo_exists():
+
+                self.root.after(
+                    0,
+                    lambda:
+                        self._update_status(text)
+                )
+
+        except Exception:
+            pass
+
+
+    def _update_status(self, text):
+
+        try:
+
+            if self.root.winfo_exists():
+
+                self.status.config(
+                    text=text
+                )
+
+        except Exception:
+            pass
+
+
+    # ========================================================
+    # ARRÊT
+    # ========================================================
+
+    def stop(self):
+
+        global running
+        global websocket
+        global network_loop_instance
+
+        running = False
+
+        print(
+            "[Agent] Arrêt demandé."
+        )
+
+        try:
+
+            if (
+                websocket is not None
+                and
+                network_loop_instance is not None
+            ):
+
+                asyncio.run_coroutine_threadsafe(
+                    websocket.close(),
+                    network_loop_instance
+                )
+
+        except Exception:
+            pass
+
+        try:
+
+            self.root.after(
+                0,
+                self.root.destroy
+            )
+
+        except Exception:
+            pass
+
+
+# ============================================================
+# OUTILS
+# ============================================================
+
+def clamp(value, minimum, maximum):
+
+    return max(
+        minimum,
+        min(
+            value,
+            maximum
+        )
+    )
+
+
+# ============================================================
+# CLAVIER : NORMALISATION DES TOUCHES
+# ============================================================
+
+def normalize_key(key):
+
+    if not isinstance(key, str):
+        return None
+
+    key = key.lower()
+
+    key_map = {
+
+        # Contrôle
+        "return": "enter",
+        "backspace": "backspace",
+        "tab": "tab",
+        "escape": "esc",
+        "space": "space",
+
+        # Modificateurs
+        "shift": "shift",
+        "shift_l": "shift",
+        "shift_r": "shift",
+
+        "control": "ctrl",
+        "control_l": "ctrl",
+        "control_r": "ctrl",
+
+        "alt": "alt",
+        "alt_l": "alt",
+        "alt_r": "alt",
+
+        "win": "win",
+        "super": "win",
+        "super_l": "win",
+        "super_r": "win",
+
+        # Flèches
+        "left": "left",
+        "right": "right",
+        "up": "up",
+        "down": "down",
+
+        # Navigation
+        "home": "home",
+        "end": "end",
+        "prior": "pageup",
+        "next": "pagedown",
+
+        "insert": "insert",
+        "delete": "delete",
+
+        # Verrouillage
+        "caps_lock": "capslock",
+        "num_lock": "numlock",
+        "scroll_lock": "scrolllock",
+
+        # Fonctions
+        "f1": "f1",
+        "f2": "f2",
+        "f3": "f3",
+        "f4": "f4",
+        "f5": "f5",
+        "f6": "f6",
+        "f7": "f7",
+        "f8": "f8",
+        "f9": "f9",
+        "f10": "f10",
+        "f11": "f11",
+        "f12": "f12",
+
+        # Symboles
+        "comma": ",",
+        "period": ".",
+        "slash": "/",
+        "backslash": "\\",
+        "semicolon": ";",
+        "apostrophe": "'",
+        "bracketleft": "[",
+        "bracketright": "]",
+        "minus": "-",
+        "equal": "=",
+        "grave": "`",
+    }
+
+    if key in key_map:
+
+        return key_map[key]
+
+    # Lettres / chiffres
+    if len(key) == 1:
+
+        return key
+
+    return None
+
+
+# ============================================================
+# COMMANDES SOURIS + CLAVIER
+# ============================================================
+
+def handle_control_command(data):
+
+    if not isinstance(data, dict):
+        return
+
+    # --------------------------------------------------------
+    # VÉRIFICATION TOKEN
+    # --------------------------------------------------------
+
+    token = data.get(
+        "token"
+    )
+
+    if token != CONTROL_TOKEN:
+
+        print(
+            "[Agent] Commande refusée : token invalide."
+        )
+
+        return
+
+    command_type = data.get(
+        "type"
+    )
+
+    try:
+
+        # ====================================================
+        # SOURIS
+        # ====================================================
+
+        screen_width, screen_height = pyautogui.size()
+
+        if command_type == "mouse_move":
+
+            x = clamp(
+                int(data["x"]),
+                0,
+                screen_width - 1
+            )
+
+            y = clamp(
+                int(data["y"]),
+                0,
+                screen_height - 1
+            )
+
+            pyautogui.moveTo(
+                x,
+                y,
+                duration=0
+            )
+
+            return
+
+
+        elif command_type == "left_down":
+
+            pyautogui.mouseDown(
+                button="left"
+            )
+
+            return
+
+
+        elif command_type == "left_up":
+
+            pyautogui.mouseUp(
+                button="left"
+            )
+
+            return
+
+
+        elif command_type == "right_down":
+
+            pyautogui.mouseDown(
+                button="right"
+            )
+
+            return
+
+
+        elif command_type == "right_up":
+
+            pyautogui.mouseUp(
+                button="right"
+            )
+
+            return
+
+
+        elif command_type == "left_click":
+
+            pyautogui.click(
+                button="left"
+            )
+
+            return
+
+
+        elif command_type == "right_click":
+
+            pyautogui.click(
+                button="right"
+            )
+
+            return
+
+
+        elif command_type == "scroll":
+
+            amount = int(
+                data.get(
+                    "amount",
+                    0
+                )
+            )
+
+            amount = clamp(
+                amount,
+                -20,
+                20
+            )
+
+            pyautogui.scroll(
+                amount
+            )
+
+            return
+
+
+        # ====================================================
+        # CLAVIER
+        # ====================================================
+
+        elif command_type == "key_down":
+
+            key = normalize_key(
+                data.get("key")
+            )
+
+            if key is None:
+
+                print(
+                    "[Agent] Touche inconnue :",
+                    data.get("key")
+                )
+
+                return
+
+            pyautogui.keyDown(
+                key
+            )
+
+            return
+
+
+        elif command_type == "key_up":
+
+            key = normalize_key(
+                data.get("key")
+            )
+
+            if key is None:
+
+                print(
+                    "[Agent] Touche inconnue :",
+                    data.get("key")
+                )
+
+                return
+
+            pyautogui.keyUp(
+                key
+            )
+
+            return
+
+
+        # ====================================================
+        # INCONNUE
+        # ====================================================
+
+        else:
+
+            print(
+                "[Agent] Commande inconnue :",
+                command_type
+            )
+
+    except Exception as exc:
+
+        print(
+            "[Agent] Erreur commande :",
+            exc
+        )
+
+
+# ============================================================
+# RÉCEPTION COMMANDES
+# ============================================================
+
+async def receive_controls(window, ws):
+
+    global running
+
+    while running:
+
+        try:
+
+            message = await ws.recv()
+
+            # ------------------------------------------------
+            # Les commandes sont du texte JSON.
+            # ------------------------------------------------
+
+            if not isinstance(
+                message,
+                str
+            ):
+
+                continue
+
+            try:
+
+                data = json.loads(
+                    message
+                )
+
+            except json.JSONDecodeError:
+
+                print(
+                    "[Agent] Message non JSON reçu."
+                )
+
+                continue
+
+            handle_control_command(
+                data
+            )
+
+        except websockets.exceptions.ConnectionClosed:
+
+            print(
+                "[Agent] Connexion fermée pendant "
+                "la réception des commandes."
+            )
+
+            break
+
+        except asyncio.CancelledError:
+
+            break
+
+        except Exception as exc:
+
+            print(
+                "[Agent] Erreur réception commande :",
+                exc
+            )
+
+            await asyncio.sleep(
+                0.1
+            )
+
+
+# ============================================================
+# CAPTURE ÉCRAN
+# ============================================================
+
+async def send_screen(window, ws):
+
+    global running
+
+    frame_delay = 1.0 / FPS
+
+    try:
+
+        with mss.mss() as sct:
+
+            monitors = sct.monitors
+
+            if len(monitors) <= MONITOR_NUMBER:
+
+                window.set_status(
+                    "Écran sélectionné introuvable"
+                )
+
+                print(
+                    "[Agent] Moniteur introuvable."
+                )
+
+                return
+
+            monitor = monitors[
+                MONITOR_NUMBER
+            ]
+
+            print(
+                "[Agent] Écran utilisé :",
+                MONITOR_NUMBER
+            )
+
+            print(
+                "[Agent] Résolution :",
+                monitor["width"],
+                "x",
+                monitor["height"]
+            )
+
+            while running:
+
+                started = time.perf_counter()
+
+                try:
+
+                    screenshot = sct.grab(
+                        monitor
+                    )
+
+                    image = Image.frombytes(
+                        "RGB",
+                        screenshot.size,
+                        screenshot.rgb
+                    )
+
+                    buffer = io.BytesIO()
+
+                    image.save(
+                        buffer,
+                        format="JPEG",
+                        quality=JPEG_QUALITY,
+                        optimize=True
+                    )
+
+                    payload = buffer.getvalue()
+
+                    if len(payload) > MAX_SIZE:
+
+                        print(
+                            "[Agent] Image trop volumineuse :",
+                            len(payload),
+                            "octets"
+                        )
+
+                    else:
+
+                        await ws.send(
+                            payload
+                        )
+
+                except websockets.exceptions.ConnectionClosed:
+
+                    print(
+                        "[Agent] WebSocket fermé."
+                    )
+
+                    break
+
+                except asyncio.CancelledError:
+
+                    break
+
+                except Exception as exc:
+
+                    print(
+                        "[Agent] Erreur capture :",
+                        exc
+                    )
+
+                    window.set_status(
+                        "Erreur capture"
+                    )
+
+                    await asyncio.sleep(
+                        1
+                    )
+
+                elapsed = (
+                    time.perf_counter()
+                    -
+                    started
+                )
+
+                wait_time = max(
+                    0,
+                    frame_delay - elapsed
+                )
+
+                await asyncio.sleep(
+                    wait_time
+                )
+
+    except asyncio.CancelledError:
+
+        pass
+
+    except Exception as exc:
+
+        print(
+            "[Agent] Erreur écran :",
+            exc
+        )
+
+        window.set_status(
+            "Erreur capture écran"
+        )
+
+
+# ============================================================
+# RÉSEAU
+# ============================================================
+
+async def network_loop(window):
+
+    global running
+    global websocket
+    global network_loop_instance
+
+    network_loop_instance = (
+        asyncio.get_running_loop()
+    )
+
+    while running:
+
+        try:
+
+            window.set_status(
+                "Connexion au serveur..."
+            )
+
+            print(
+                "[Agent] Connexion à :",
+                SERVER_URL
+            )
+
+            async with websockets.connect(
+                SERVER_URL,
+                max_size=MAX_SIZE,
+                ping_interval=20,
+                ping_timeout=20,
+                close_timeout=5
+            ) as ws:
+
+                websocket = ws
+
+                window.set_status(
+                    "● Connecté — partage + souris + clavier"
+                )
+
+                print(
+                    "[Agent] Connexion réussie."
+                )
+
+                # ------------------------------------------------
+                # TÂCHE ÉCRAN
+                # ------------------------------------------------
+
+                screen_task = asyncio.create_task(
+                    send_screen(
+                        window,
+                        ws
+                    )
+                )
+
+                # ------------------------------------------------
+                # TÂCHE CONTRÔLES
+                # ------------------------------------------------
+
+                control_task = asyncio.create_task(
+                    receive_controls(
+                        window,
+                        ws
+                    )
+                )
+
+                # ------------------------------------------------
+                # LES DEUX FONCTIONNENT EN PARALLÈLE
+                # ------------------------------------------------
+
+                done, pending = await asyncio.wait(
+                    [
+                        screen_task,
+                        control_task
+                    ],
+                    return_when=asyncio.FIRST_COMPLETED
+                )
+
+                for task in pending:
+
+                    task.cancel()
+
+                await asyncio.gather(
+                    *pending,
+                    return_exceptions=True
+                )
+
+                websocket = None
+
+
+        except websockets.exceptions.InvalidStatus as exc:
+
+            websocket = None
+
+            if running:
+
+                print(
+                    "[Agent] Connexion refusée :",
+                    exc
+                )
+
+                window.set_status(
+                    "Connexion refusée"
+                )
+
+                await asyncio.sleep(
+                    RECONNECT_DELAY
+                )
+
+
+        except websockets.exceptions.ConnectionClosed as exc:
+
+            websocket = None
+
+            if running:
+
+                print(
+                    "[Agent] Connexion fermée :",
+                    exc
+                )
+
+                window.set_status(
+                    "Connexion perdue — reconnexion..."
+                )
+
+                await asyncio.sleep(
+                    RECONNECT_DELAY
+                )
+
+
+        except Exception as exc:
+
+            websocket = None
+
+            if running:
+
+                print(
+                    "[Agent] Erreur réseau :",
+                    exc
+                )
+
+                window.set_status(
+                    "Serveur indisponible — reconnexion..."
+                )
+
+                await asyncio.sleep(
+                    RECONNECT_DELAY
+                )
+
+
+    websocket = None
+
+    print(
+        "[Agent] Boucle réseau arrêtée."
+    )
+
+
+# ============================================================
+# THREAD RÉSEAU
+# ============================================================
+
+def start_network(window):
+
+    try:
+
+        asyncio.run(
+            network_loop(
+                window
+            )
+        )
+
+    except Exception as exc:
+
+        print(
+            "[Agent] Erreur réseau générale :",
+            exc
+        )
+
+
+# ============================================================
+# LANCEMENT
+# ============================================================
+
+if __name__ == "__main__":
+
+    print()
+    print("==============================================")
+    print("            REMOTE SCREEN AGENT")
+    print("==============================================")
+    print()
+
+    print(
+        "Serveur :",
+        SERVER_URL
+    )
+
+    print(
+        "FPS :",
+        FPS
+    )
+
+    print(
+        "Qualité JPEG :",
+        JPEG_QUALITY
+    )
+
+    print(
+        "Écran :",
+        MONITOR_NUMBER
+    )
+
+    print(
+        "Contrôle souris : ACTIF"
+    )
+
+    print(
+        "Contrôle clavier : ACTIF"
+    )
+
+    print()
+
+    app = AgentWindow()
+
+    network_thread = threading.Thread(
+        target=start_network,
+        args=(app,),
+        daemon=True
+    )
+
+    network_thread.start()
+
+    try:
+
+        app.root.mainloop()
+
+    except KeyboardInterrupt:
+
+        running = False
+
+    finally:
+
+        running = False
+
+        print()
+        print(
+            "[Agent] Partage d'écran arrêté."
+        )
+
