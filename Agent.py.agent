@@ -4,8 +4,6 @@ import io
 import json
 import threading
 import time
-import tkinter as tk
-from tkinter import ttk
 
 import mss
 from PIL import Image
@@ -13,12 +11,7 @@ import websockets
 import pyautogui
 
 
-# ============================================================
-# CONFIGURATION
-# ============================================================
-
 SERVER_URL = "wss://wage-cancer-volume-scheduled.trycloudflare.com/agent"
-
 
 FPS = 15
 JPEG_QUALITY = 65
@@ -32,10 +25,6 @@ RECONNECT_DELAY = 3
 CONTROL_TOKEN = "CHANGE-ME-REMOTE-SCREEN-2026"
 
 
-# ============================================================
-# ÉTAT
-# ============================================================
-
 running = True
 
 websocket = None
@@ -43,229 +32,14 @@ websocket = None
 network_loop_instance = None
 
 
-# ============================================================
-# PYAUTOGUI
-# ============================================================
-
 pyautogui.PAUSE = 0
 
-# Permet au curseur distant d'aller dans les coins sans
-# déclencher le FAILSAFE de PyAutoGUI.
 pyautogui.FAILSAFE = False
 
 
-# ============================================================
-# FENÊTRE AGENT
-# ============================================================
+def set_status(text):
+    print("[Agent]", text)
 
-class AgentWindow:
-
-    def __init__(self):
-
-        self.root = tk.Tk()
-
-        self.root.title(
-            "Remote Screen — Agent"
-        )
-
-        self.root.geometry(
-            "460x220"
-        )
-
-        self.root.resizable(
-            False,
-            False
-        )
-
-        self.root.configure(
-            bg="#0b0f14"
-        )
-
-        self.root.protocol(
-            "WM_DELETE_WINDOW",
-            self.stop
-        )
-
-        # ----------------------------------------------------
-        # STYLE
-        # ----------------------------------------------------
-
-        style = ttk.Style()
-
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
-
-        style.configure(
-            "Agent.TFrame",
-            background="#0b0f14"
-        )
-
-        style.configure(
-            "Title.TLabel",
-            background="#0b0f14",
-            foreground="#ffffff",
-            font=("Segoe UI", 19, "bold")
-        )
-
-        style.configure(
-            "Sub.TLabel",
-            background="#0b0f14",
-            foreground="#8d99a6",
-            font=("Segoe UI", 10)
-        )
-
-        style.configure(
-            "Status.TLabel",
-            background="#0b0f14",
-            foreground="#f0ad4e",
-            font=("Segoe UI", 10, "bold")
-        )
-
-        style.configure(
-            "Agent.TButton",
-            font=("Segoe UI", 10, "bold"),
-            padding=(15, 8)
-        )
-
-        # ----------------------------------------------------
-        # CONTENU
-        # ----------------------------------------------------
-
-        frame = ttk.Frame(
-            self.root,
-            style="Agent.TFrame",
-            padding=25
-        )
-
-        frame.pack(
-            fill="both",
-            expand=True
-        )
-
-        title = ttk.Label(
-            frame,
-            text="REMOTE SCREEN",
-            style="Title.TLabel"
-        )
-
-        title.pack(
-            pady=(0, 4)
-        )
-
-        subtitle = ttk.Label(
-            frame,
-            text="Partage d'écran + souris + clavier",
-            style="Sub.TLabel"
-        )
-
-        subtitle.pack(
-            pady=(0, 15)
-        )
-
-        self.status = ttk.Label(
-            frame,
-            text="Initialisation...",
-            style="Status.TLabel"
-        )
-
-        self.status.pack(
-            pady=8
-        )
-
-        self.button = ttk.Button(
-            frame,
-            text="Arrêter le partage",
-            style="Agent.TButton",
-            command=self.stop
-        )
-
-        self.button.pack(
-            pady=8
-        )
-
-
-    # ========================================================
-    # STATUT
-    # ========================================================
-
-    def set_status(self, text):
-
-        try:
-
-            if self.root.winfo_exists():
-
-                self.root.after(
-                    0,
-                    lambda:
-                        self._update_status(text)
-                )
-
-        except Exception:
-            pass
-
-
-    def _update_status(self, text):
-
-        try:
-
-            if self.root.winfo_exists():
-
-                self.status.config(
-                    text=text
-                )
-
-        except Exception:
-            pass
-
-
-    # ========================================================
-    # ARRÊT
-    # ========================================================
-
-    def stop(self):
-
-        global running
-        global websocket
-        global network_loop_instance
-
-        running = False
-
-        print(
-            "[Agent] Arrêt demandé."
-        )
-
-        try:
-
-            if (
-                websocket is not None
-                and
-                network_loop_instance is not None
-            ):
-
-                asyncio.run_coroutine_threadsafe(
-                    websocket.close(),
-                    network_loop_instance
-                )
-
-        except Exception:
-            pass
-
-        try:
-
-            self.root.after(
-                0,
-                self.root.destroy
-            )
-
-        except Exception:
-            pass
-
-
-# ============================================================
-# OUTILS
-# ============================================================
 
 def clamp(value, minimum, maximum):
 
@@ -278,10 +52,6 @@ def clamp(value, minimum, maximum):
     )
 
 
-# ============================================================
-# CLAVIER : NORMALISATION DES TOUCHES
-# ============================================================
-
 def normalize_key(key):
 
     if not isinstance(key, str):
@@ -291,14 +61,12 @@ def normalize_key(key):
 
     key_map = {
 
-        # Contrôle
         "return": "enter",
         "backspace": "backspace",
         "tab": "tab",
         "escape": "esc",
         "space": "space",
 
-        # Modificateurs
         "shift": "shift",
         "shift_l": "shift",
         "shift_r": "shift",
@@ -316,13 +84,11 @@ def normalize_key(key):
         "super_l": "win",
         "super_r": "win",
 
-        # Flèches
         "left": "left",
         "right": "right",
         "up": "up",
         "down": "down",
 
-        # Navigation
         "home": "home",
         "end": "end",
         "prior": "pageup",
@@ -331,12 +97,10 @@ def normalize_key(key):
         "insert": "insert",
         "delete": "delete",
 
-        # Verrouillage
         "caps_lock": "capslock",
         "num_lock": "numlock",
         "scroll_lock": "scrolllock",
 
-        # Fonctions
         "f1": "f1",
         "f2": "f2",
         "f3": "f3",
@@ -350,7 +114,6 @@ def normalize_key(key):
         "f11": "f11",
         "f12": "f12",
 
-        # Symboles
         "comma": ",",
         "period": ".",
         "slash": "/",
@@ -365,33 +128,20 @@ def normalize_key(key):
     }
 
     if key in key_map:
-
         return key_map[key]
 
-    # Lettres / chiffres
     if len(key) == 1:
-
         return key
 
     return None
 
-
-# ============================================================
-# COMMANDES SOURIS + CLAVIER
-# ============================================================
 
 def handle_control_command(data):
 
     if not isinstance(data, dict):
         return
 
-    # --------------------------------------------------------
-    # VÉRIFICATION TOKEN
-    # --------------------------------------------------------
-
-    token = data.get(
-        "token"
-    )
+    token = data.get("token")
 
     if token != CONTROL_TOKEN:
 
@@ -401,15 +151,9 @@ def handle_control_command(data):
 
         return
 
-    command_type = data.get(
-        "type"
-    )
+    command_type = data.get("type")
 
     try:
-
-        # ====================================================
-        # SOURIS
-        # ====================================================
 
         screen_width, screen_height = pyautogui.size()
 
@@ -435,7 +179,6 @@ def handle_control_command(data):
 
             return
 
-
         elif command_type == "left_down":
 
             pyautogui.mouseDown(
@@ -443,7 +186,6 @@ def handle_control_command(data):
             )
 
             return
-
 
         elif command_type == "left_up":
 
@@ -453,7 +195,6 @@ def handle_control_command(data):
 
             return
 
-
         elif command_type == "right_down":
 
             pyautogui.mouseDown(
@@ -461,7 +202,6 @@ def handle_control_command(data):
             )
 
             return
-
 
         elif command_type == "right_up":
 
@@ -471,7 +211,6 @@ def handle_control_command(data):
 
             return
 
-
         elif command_type == "left_click":
 
             pyautogui.click(
@@ -480,7 +219,6 @@ def handle_control_command(data):
 
             return
 
-
         elif command_type == "right_click":
 
             pyautogui.click(
@@ -488,7 +226,6 @@ def handle_control_command(data):
             )
 
             return
-
 
         elif command_type == "scroll":
 
@@ -511,11 +248,6 @@ def handle_control_command(data):
 
             return
 
-
-        # ====================================================
-        # CLAVIER
-        # ====================================================
-
         elif command_type == "key_down":
 
             key = normalize_key(
@@ -536,7 +268,6 @@ def handle_control_command(data):
             )
 
             return
-
 
         elif command_type == "key_up":
 
@@ -559,11 +290,6 @@ def handle_control_command(data):
 
             return
 
-
-        # ====================================================
-        # INCONNUE
-        # ====================================================
-
         else:
 
             print(
@@ -579,11 +305,7 @@ def handle_control_command(data):
         )
 
 
-# ============================================================
-# RÉCEPTION COMMANDES
-# ============================================================
-
-async def receive_controls(window, ws):
+async def receive_controls(ws):
 
     global running
 
@@ -592,10 +314,6 @@ async def receive_controls(window, ws):
         try:
 
             message = await ws.recv()
-
-            # ------------------------------------------------
-            # Les commandes sont du texte JSON.
-            # ------------------------------------------------
 
             if not isinstance(
                 message,
@@ -625,8 +343,7 @@ async def receive_controls(window, ws):
         except websockets.exceptions.ConnectionClosed:
 
             print(
-                "[Agent] Connexion fermée pendant "
-                "la réception des commandes."
+                "[Agent] Connexion fermée pendant la réception."
             )
 
             break
@@ -647,11 +364,7 @@ async def receive_controls(window, ws):
             )
 
 
-# ============================================================
-# CAPTURE ÉCRAN
-# ============================================================
-
-async def send_screen(window, ws):
+async def send_screen(ws):
 
     global running
 
@@ -664,10 +377,6 @@ async def send_screen(window, ws):
             monitors = sct.monitors
 
             if len(monitors) <= MONITOR_NUMBER:
-
-                window.set_status(
-                    "Écran sélectionné introuvable"
-                )
 
                 print(
                     "[Agent] Moniteur introuvable."
@@ -751,10 +460,6 @@ async def send_screen(window, ws):
                         exc
                     )
 
-                    window.set_status(
-                        "Erreur capture"
-                    )
-
                     await asyncio.sleep(
                         1
                     )
@@ -785,16 +490,8 @@ async def send_screen(window, ws):
             exc
         )
 
-        window.set_status(
-            "Erreur capture écran"
-        )
 
-
-# ============================================================
-# RÉSEAU
-# ============================================================
-
-async def network_loop(window):
+async def network_loop():
 
     global running
     global websocket
@@ -808,7 +505,7 @@ async def network_loop(window):
 
         try:
 
-            window.set_status(
+            set_status(
                 "Connexion au serveur..."
             )
 
@@ -827,39 +524,25 @@ async def network_loop(window):
 
                 websocket = ws
 
-                window.set_status(
-                    "● Connecté — partage + souris + clavier"
+                set_status(
+                    "Connecté — partage + souris + clavier"
                 )
 
                 print(
                     "[Agent] Connexion réussie."
                 )
 
-                # ------------------------------------------------
-                # TÂCHE ÉCRAN
-                # ------------------------------------------------
-
                 screen_task = asyncio.create_task(
                     send_screen(
-                        window,
                         ws
                     )
                 )
-
-                # ------------------------------------------------
-                # TÂCHE CONTRÔLES
-                # ------------------------------------------------
 
                 control_task = asyncio.create_task(
                     receive_controls(
-                        window,
                         ws
                     )
                 )
-
-                # ------------------------------------------------
-                # LES DEUX FONCTIONNENT EN PARALLÈLE
-                # ------------------------------------------------
 
                 done, pending = await asyncio.wait(
                     [
@@ -880,7 +563,6 @@ async def network_loop(window):
 
                 websocket = None
 
-
         except websockets.exceptions.InvalidStatus as exc:
 
             websocket = None
@@ -892,14 +574,9 @@ async def network_loop(window):
                     exc
                 )
 
-                window.set_status(
-                    "Connexion refusée"
-                )
-
                 await asyncio.sleep(
                     RECONNECT_DELAY
                 )
-
 
         except websockets.exceptions.ConnectionClosed as exc:
 
@@ -912,14 +589,9 @@ async def network_loop(window):
                     exc
                 )
 
-                window.set_status(
-                    "Connexion perdue — reconnexion..."
-                )
-
                 await asyncio.sleep(
                     RECONNECT_DELAY
                 )
-
 
         except Exception as exc:
 
@@ -932,14 +604,9 @@ async def network_loop(window):
                     exc
                 )
 
-                window.set_status(
-                    "Serveur indisponible — reconnexion..."
-                )
-
                 await asyncio.sleep(
                     RECONNECT_DELAY
                 )
-
 
     websocket = None
 
@@ -948,18 +615,12 @@ async def network_loop(window):
     )
 
 
-# ============================================================
-# THREAD RÉSEAU
-# ============================================================
-
-def start_network(window):
+def start_network():
 
     try:
 
         asyncio.run(
-            network_loop(
-                window
-            )
+            network_loop()
         )
 
     except Exception as exc:
@@ -969,10 +630,6 @@ def start_network(window):
             exc
         )
 
-
-# ============================================================
-# LANCEMENT
-# ============================================================
 
 if __name__ == "__main__":
 
@@ -1012,11 +669,8 @@ if __name__ == "__main__":
 
     print()
 
-    app = AgentWindow()
-
     network_thread = threading.Thread(
         target=start_network,
-        args=(app,),
         daemon=True
     )
 
@@ -1024,17 +678,23 @@ if __name__ == "__main__":
 
     try:
 
-        app.root.mainloop()
+        while running:
+
+            time.sleep(1)
 
     except KeyboardInterrupt:
 
         running = False
 
+        print()
+        print(
+            "[Agent] Arrêt demandé."
+        )
+
     finally:
 
         running = False
 
-        print()
         print(
             "[Agent] Partage d'écran arrêté."
         )
