@@ -13,8 +13,8 @@ import pyautogui
 
 SERVER_URL = "wss://wage-cancer-volume-scheduled.trycloudflare.com/agent"
 
-FPS = 30
-JPEG_QUALITY = 55
+FPS = 60
+JPEG_QUALITY = 50
 
 MONITOR_NUMBER = 1
 
@@ -58,7 +58,6 @@ def normalize_key(key):
     key = key.lower()
 
     key_map = {
-
         "return": "enter",
         "backspace": "backspace",
         "tab": "tab",
@@ -139,23 +138,16 @@ def handle_control_command(data):
     if not isinstance(data, dict):
         return
 
-    token = data.get("token")
-
-    if token != CONTROL_TOKEN:
-
-        print(
-            "[Agent] Commande refusée : token invalide."
-        )
-
+    if data.get("token") != CONTROL_TOKEN:
         return
 
     command_type = data.get("type")
 
     try:
 
-        screen_width, screen_height = pyautogui.size()
-
         if command_type == "mouse_move":
+
+            screen_width, screen_height = pyautogui.size()
 
             x = clamp(
                 int(data["x"]),
@@ -175,15 +167,11 @@ def handle_control_command(data):
                 duration=0
             )
 
-            return
-
         elif command_type == "left_down":
 
             pyautogui.mouseDown(
                 button="left"
             )
-
-            return
 
         elif command_type == "left_up":
 
@@ -191,15 +179,11 @@ def handle_control_command(data):
                 button="left"
             )
 
-            return
-
         elif command_type == "right_down":
 
             pyautogui.mouseDown(
                 button="right"
             )
-
-            return
 
         elif command_type == "right_up":
 
@@ -207,23 +191,17 @@ def handle_control_command(data):
                 button="right"
             )
 
-            return
-
         elif command_type == "left_click":
 
             pyautogui.click(
                 button="left"
             )
 
-            return
-
         elif command_type == "right_click":
 
             pyautogui.click(
                 button="right"
             )
-
-            return
 
         elif command_type == "scroll":
 
@@ -244,28 +222,14 @@ def handle_control_command(data):
                 amount
             )
 
-            return
-
         elif command_type == "key_down":
 
             key = normalize_key(
                 data.get("key")
             )
 
-            if key is None:
-
-                print(
-                    "[Agent] Touche inconnue :",
-                    data.get("key")
-                )
-
-                return
-
-            pyautogui.keyDown(
-                key
-            )
-
-            return
+            if key is not None:
+                pyautogui.keyDown(key)
 
         elif command_type == "key_up":
 
@@ -273,27 +237,8 @@ def handle_control_command(data):
                 data.get("key")
             )
 
-            if key is None:
-
-                print(
-                    "[Agent] Touche inconnue :",
-                    data.get("key")
-                )
-
-                return
-
-            pyautogui.keyUp(
-                key
-            )
-
-            return
-
-        else:
-
-            print(
-                "[Agent] Commande inconnue :",
-                command_type
-            )
+            if key is not None:
+                pyautogui.keyUp(key)
 
     except Exception as exc:
 
@@ -327,10 +272,6 @@ async def receive_controls(ws):
 
             except json.JSONDecodeError:
 
-                print(
-                    "[Agent] Message non JSON reçu."
-                )
-
                 continue
 
             handle_control_command(
@@ -338,10 +279,6 @@ async def receive_controls(ws):
             )
 
         except websockets.exceptions.ConnectionClosed:
-
-            print(
-                "[Agent] Connexion fermée pendant la réception."
-            )
 
             break
 
@@ -352,12 +289,12 @@ async def receive_controls(ws):
         except Exception as exc:
 
             print(
-                "[Agent] Erreur réception commande :",
+                "[Agent] Erreur réception :",
                 exc
             )
 
             await asyncio.sleep(
-                0.05
+                0.01
             )
 
 
@@ -365,8 +302,7 @@ async def send_screen(ws):
 
     global running
 
-    frame_delay = 1.0 / FPS
-    next_frame_time = time.perf_counter()
+    target_interval = 1.0 / FPS
 
     try:
 
@@ -386,22 +322,29 @@ async def send_screen(ws):
                 MONITOR_NUMBER
             ]
 
+            width = monitor["width"]
+            height = monitor["height"]
+
             print(
-                "[Agent] Écran utilisé :",
-                MONITOR_NUMBER
+                "[Agent] Écran :",
+                width,
+                "x",
+                height
             )
 
             print(
-                "[Agent] Résolution :",
-                monitor["width"],
-                "x",
-                monitor["height"]
+                "[Agent] FPS cible :",
+                FPS
             )
 
             frame_count = 0
-            fps_start = time.perf_counter()
+            fps_timer = time.perf_counter()
+
+            next_frame = time.perf_counter()
 
             while running:
+
+                capture_start = time.perf_counter()
 
                 try:
 
@@ -424,7 +367,8 @@ async def send_screen(ws):
                     image.save(
                         buffer,
                         format="JPEG",
-                        quality=JPEG_QUALITY
+                        quality=JPEG_QUALITY,
+                        subsampling=2
                     )
 
                     payload = buffer.getvalue()
@@ -437,19 +381,7 @@ async def send_screen(ws):
 
                         frame_count += 1
 
-                    else:
-
-                        print(
-                            "[Agent] Image trop volumineuse :",
-                            len(payload),
-                            "octets"
-                        )
-
                 except websockets.exceptions.ConnectionClosed:
-
-                    print(
-                        "[Agent] WebSocket fermé."
-                    )
 
                     break
 
@@ -465,44 +397,53 @@ async def send_screen(ws):
                     )
 
                     await asyncio.sleep(
-                        0.1
+                        0.01
                     )
 
-                next_frame_time += frame_delay
+                capture_time = (
+                    time.perf_counter()
+                    -
+                    capture_start
+                )
 
-                sleep_time = (
-                    next_frame_time
+                next_frame += target_interval
+
+                remaining = (
+                    next_frame
                     -
                     time.perf_counter()
                 )
 
-                if sleep_time > 0:
+                if remaining > 0:
 
                     await asyncio.sleep(
-                        sleep_time
+                        remaining
                     )
 
                 else:
 
-                    next_frame_time = time.perf_counter()
+                    next_frame = time.perf_counter()
 
-                current_time = time.perf_counter()
+                now = time.perf_counter()
 
-                if current_time - fps_start >= 5:
+                if now - fps_timer >= 3:
 
                     real_fps = (
                         frame_count
                         /
-                        (current_time - fps_start)
+                        (now - fps_timer)
                     )
 
                     print(
                         "[Agent] FPS réel :",
-                        round(real_fps, 1)
+                        round(real_fps, 1),
+                        "| capture :",
+                        round(capture_time * 1000, 1),
+                        "ms"
                     )
 
                     frame_count = 0
-                    fps_start = current_time
+                    fps_timer = now
 
     except asyncio.CancelledError:
 
@@ -558,15 +499,11 @@ async def network_loop():
                 )
 
                 screen_task = asyncio.create_task(
-                    send_screen(
-                        ws
-                    )
+                    send_screen(ws)
                 )
 
                 control_task = asyncio.create_task(
-                    receive_controls(
-                        ws
-                    )
+                    receive_controls(ws)
                 )
 
                 done, pending = await asyncio.wait(
@@ -723,3 +660,4 @@ if __name__ == "__main__":
         print(
             "[Agent] Partage d'écran arrêté."
         )
+
