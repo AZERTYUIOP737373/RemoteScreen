@@ -13,8 +13,8 @@ import pyautogui
 
 SERVER_URL = "wss://wage-cancer-volume-scheduled.trycloudflare.com/agent"
 
-FPS = 15
-JPEG_QUALITY = 65
+FPS = 30
+JPEG_QUALITY = 55
 
 MONITOR_NUMBER = 1
 
@@ -33,7 +33,6 @@ network_loop_instance = None
 
 
 pyautogui.PAUSE = 0
-
 pyautogui.FAILSAFE = False
 
 
@@ -42,7 +41,6 @@ def set_status(text):
 
 
 def clamp(value, minimum, maximum):
-
     return max(
         minimum,
         min(
@@ -319,7 +317,6 @@ async def receive_controls(ws):
                 message,
                 str
             ):
-
                 continue
 
             try:
@@ -360,7 +357,7 @@ async def receive_controls(ws):
             )
 
             await asyncio.sleep(
-                0.1
+                0.05
             )
 
 
@@ -369,6 +366,7 @@ async def send_screen(ws):
     global running
 
     frame_delay = 1.0 / FPS
+    next_frame_time = time.perf_counter()
 
     try:
 
@@ -400,9 +398,10 @@ async def send_screen(ws):
                 monitor["height"]
             )
 
-            while running:
+            frame_count = 0
+            fps_start = time.perf_counter()
 
-                started = time.perf_counter()
+            while running:
 
                 try:
 
@@ -410,10 +409,14 @@ async def send_screen(ws):
                         monitor
                     )
 
-                    image = Image.frombytes(
+                    image = Image.frombuffer(
                         "RGB",
                         screenshot.size,
-                        screenshot.rgb
+                        screenshot.rgb,
+                        "raw",
+                        "RGB",
+                        0,
+                        1
                     )
 
                     buffer = io.BytesIO()
@@ -421,24 +424,25 @@ async def send_screen(ws):
                     image.save(
                         buffer,
                         format="JPEG",
-                        quality=JPEG_QUALITY,
-                        optimize=True
+                        quality=JPEG_QUALITY
                     )
 
                     payload = buffer.getvalue()
 
-                    if len(payload) > MAX_SIZE:
+                    if len(payload) <= MAX_SIZE:
+
+                        await ws.send(
+                            payload
+                        )
+
+                        frame_count += 1
+
+                    else:
 
                         print(
                             "[Agent] Image trop volumineuse :",
                             len(payload),
                             "octets"
-                        )
-
-                    else:
-
-                        await ws.send(
-                            payload
                         )
 
                 except websockets.exceptions.ConnectionClosed:
@@ -461,23 +465,44 @@ async def send_screen(ws):
                     )
 
                     await asyncio.sleep(
-                        1
+                        0.1
                     )
 
-                elapsed = (
-                    time.perf_counter()
+                next_frame_time += frame_delay
+
+                sleep_time = (
+                    next_frame_time
                     -
-                    started
+                    time.perf_counter()
                 )
 
-                wait_time = max(
-                    0,
-                    frame_delay - elapsed
-                )
+                if sleep_time > 0:
 
-                await asyncio.sleep(
-                    wait_time
-                )
+                    await asyncio.sleep(
+                        sleep_time
+                    )
+
+                else:
+
+                    next_frame_time = time.perf_counter()
+
+                current_time = time.perf_counter()
+
+                if current_time - fps_start >= 5:
+
+                    real_fps = (
+                        frame_count
+                        /
+                        (current_time - fps_start)
+                    )
+
+                    print(
+                        "[Agent] FPS réel :",
+                        round(real_fps, 1)
+                    )
+
+                    frame_count = 0
+                    fps_start = current_time
 
     except asyncio.CancelledError:
 
@@ -645,7 +670,7 @@ if __name__ == "__main__":
     )
 
     print(
-        "FPS :",
+        "FPS cible :",
         FPS
     )
 
@@ -698,4 +723,3 @@ if __name__ == "__main__":
         print(
             "[Agent] Partage d'écran arrêté."
         )
-
