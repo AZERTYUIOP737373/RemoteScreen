@@ -17,7 +17,7 @@ import pyautogui
 # CONFIGURATION
 # ============================================================
 
-SERVER_URL = "wss://screenshot-silk-mind-rrp.trycloudflare.com/agent"
+SERVER_URL = "wss://wage-cancer-volume-scheduled.trycloudflare.com/agent"
 
 
 FPS = 15
